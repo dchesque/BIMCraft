@@ -8,7 +8,7 @@ pub mod engine;
 pub mod family;
 pub mod favorites;
 mod fixtures;
-mod font;
+pub mod font;
 pub mod geom;
 pub mod graphics;
 pub mod ifc;

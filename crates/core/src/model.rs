@@ -11,6 +11,7 @@ use std::f64::consts::{PI, TAU};
 use serde::{Deserialize, Serialize};
 
 use crate::family::{Family, Piece};
+use crate::font::Lettering;
 use crate::geom::{self, P2, Region};
 use crate::graphics::{self, Graphics, ViewFilter, ViewTemplate};
 use crate::language::Language;
@@ -1399,6 +1400,9 @@ pub struct Model {
     /// What its drawings say, and the names commands give.
     #[serde(default)]
     pub language: Language,
+    /// The lettering its drawings and sheets are written in.
+    #[serde(default, skip_serializing_if = "Lettering::is_block")]
+    pub font: Lettering,
     pub next_id: Id,
     pub types: Types,
     /// What layers are made of, by name.
@@ -1448,6 +1452,7 @@ impl Model {
             uid: fresh_uid(),
             units: Units::default(),
             language,
+            font: Lettering::Block,
             next_id: 1,
             types: Types::default(),
             materials: BTreeMap::new(),

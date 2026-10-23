@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 
 use crate::engine::{Command, Run, Session};
 use crate::favorites::{self, FamilyEntry, Favorites, MaterialEntry};
+use crate::font::Lettering;
 use crate::geom::{self, P2};
 use crate::graphics::{self, Graphics, Group, Look, Override, ViewTemplate};
 use crate::language::Language;
@@ -662,6 +663,16 @@ pub static ALL: &[Command] = &[
          Portuguese or Spanish. What's already named stays named",
         language,
     ),
+    edit(
+        "font",
+        "Project Lettering",
+        &[],
+        "{name?: block|iso} the lettering every drawing, sheet, schedule on a sheet and PDF of the project is written in: \
+         block, capitals all as wide (the default), or iso, after ISO 3098 and NBR 8402, with lower case, proportional \
+         widths, round curves and the marks block lacks (% ; < > [ ] ! * º ª ¹ ² ³ Ø ±). Tables and title blocks lay out \
+         by its widths",
+        font,
+    ),
     other("inspect", "Inspect", "{} levels, element counts, types, warnings and undo history", inspect),
     other(
         "render",
@@ -1283,6 +1294,17 @@ fn language(s: &mut Session, p: &Value) -> R {
         }
     }
     Ok(json!({"language": s.model.language.code()}))
+}
+
+fn font(s: &mut Session, p: &Value) -> R {
+    let c = "font";
+    if let Some(name) = string(c, p, "name")? {
+        let f = Lettering::from_name(&name).ok_or_else(|| bad(c, format!("`name` is block or iso, not `{name}`")))?;
+        if f != s.model.font {
+            s.model_mut().font = f;
+        }
+    }
+    Ok(json!({"name": s.model.font.name()}))
 }
 
 fn open(s: &mut Session, p: &Value) -> R {

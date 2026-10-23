@@ -5,12 +5,13 @@
 //! beyond, and the 3D view's, go in as images. A schedule is a ruled table under its title, the
 //! size its lettering makes it. Text notes go on the paper itself.
 
+use crate::font::Lettering;
 use crate::geom::P2;
 use crate::graphics::Look;
 use crate::language::Language;
 use crate::model::{Element, Id, Model, Schedule, Sheet, Viewport, paper};
 use crate::render::{self, Drawing, PAPER, Prim, Rgb, View};
-use crate::{font, schedule, view3d};
+use crate::{schedule, view3d};
 
 /// Paper px per mm in a sheet's drawing: plan lettering 10 px tall comes out 2 mm on paper.
 pub const DENSITY: f64 = 5.0;
@@ -105,7 +106,7 @@ pub fn spot(m: &Model, sheet: Id, view: Id, scale: f64) -> P2 {
 fn left(d: &mut Drawing, text: &str, at: P2, height: f64) {
     let h = (height * DENSITY) as f32;
     let (x, y) = d.view.px(at);
-    d.text(text, (x + font::width(text, h) / 2.0, y), h, INK);
+    d.text(text, (x + d.width(text, h) / 2.0, y), h, INK);
 }
 
 /// The border, 20 mm in on the left (for binding) and 10 mm on the other sides, and the title
@@ -133,6 +134,8 @@ struct Table {
     rows: Vec<Vec<String>>,
     widths: Vec<f32>,
     totals: bool,
+    /// The lettering it is written in.
+    font: Lettering,
 }
 
 fn table_of(m: &Model, sc: &Schedule) -> Table {
@@ -156,15 +159,15 @@ fn table_of(m: &Model, sc: &Schedule) -> Table {
         .collect();
     let widths = (0..headings.len())
         .map(|i| {
-            let widest = headings.get(i).map_or(0.0, |c| font::width(c, CELL_TEXT));
-            rows.iter().filter_map(|r| r.get(i)).map(|c| font::width(c, CELL_TEXT)).fold(widest, f32::max) + 2.0 * PAD
+            let widest = headings.get(i).map_or(0.0, |c| m.font.width(c, CELL_TEXT));
+            rows.iter().filter_map(|r| r.get(i)).map(|c| m.font.width(c, CELL_TEXT)).fold(widest, f32::max) + 2.0 * PAD
         })
         .collect();
-    Table { headings, rows, widths, totals: t.totals.is_some() }
+    Table { headings, rows, widths, totals: t.totals.is_some(), font: m.font }
 }
 
 fn table_size(name: &str, t: &Table) -> (u32, u32) {
-    let width = t.widths.iter().sum::<f32>().max(2.0 * PAD + font::width(name, TITLE_TEXT));
+    let width = t.widths.iter().sum::<f32>().max(2.0 * PAD + t.font.width(name, TITLE_TEXT));
     (width.ceil() as u32, (TITLE_ROW + ROW * (t.rows.len() + 1) as f32).ceil() as u32)
 }
 
@@ -190,7 +193,7 @@ fn table(d: &mut Drawing, m: &Model, sc: &Schedule, (x, y): (f32, f32)) {
         }
         let mut left = x;
         for (text, width) in cells.iter().zip(&t.widths) {
-            d.text(text, (left + PAD + font::width(text, CELL_TEXT) / 2.0, row + ROW / 2.0), CELL_TEXT, INK);
+            d.text(text, (left + PAD + t.font.width(text, CELL_TEXT) / 2.0, row + ROW / 2.0), CELL_TEXT, INK);
             left += width;
         }
     }
@@ -222,7 +225,7 @@ pub fn draw(m: &Model, id: Id) -> Option<Drawing> {
             _ => None,
         })
         .collect();
-    let mut d = Drawing::new(page(paper));
+    let mut d = Drawing::new(page(paper)).lettered(m.font);
     d.own(Some(id));
     // Schedules keep their own size: no scale of theirs.
     let scaled: Vec<&Viewport> =
@@ -253,7 +256,7 @@ pub fn draw(m: &Model, id: Id) -> Option<Drawing> {
                 let cam = view3d::camera_in(m, v.azimuth, v.elevation, view.scale, ROOM * DENSITY, &Look::of(m, vp.view));
                 let img = scene.get_or_insert_with(|| view3d::Scene::new(m)).render_in(&cam, &[], &Look::of(m, vp.view));
                 d.push(Prim::Image { at: (ox, oy), width: img.width, height: img.height, rgba: img.rgba });
-                Drawing::new(view)
+                Drawing::new(view).lettered(m.font)
             }
             _ => continue,
         };
@@ -268,7 +271,7 @@ pub fn draw(m: &Model, id: Id) -> Option<Drawing> {
         let corner = d.view.mm((ox, oy + view.height as f32));
         let x = corner.0 + ROOM;
         left(&mut d, name, P2(x, corner.1 - 5.0), 3.0);
-        let line = f64::from(font::width(name, (3.0 * DENSITY) as f32)) / DENSITY + 10.0;
+        let line = f64::from(d.width(name, (3.0 * DENSITY) as f32)) / DENSITY + 10.0;
         d.line(&[P2(x, corner.1 - 8.0), P2(x + line, corner.1 - 8.0)], 1.5, INK, false);
         left(&mut d, &format!("1 : {}", vp.scale), P2(x, corner.1 - 11.0), 2.0);
     }

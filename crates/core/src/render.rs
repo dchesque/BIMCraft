@@ -17,6 +17,7 @@ use std::fmt::Write;
 
 use tiny_skia::{Color, FillRule, IntSize, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, StrokeDash, Transform};
 
+use crate::font::Lettering;
 use crate::geom::{self, P2};
 use crate::graphics::{Detail, Look};
 use crate::model::{
@@ -26,7 +27,7 @@ use crate::model::{
 use crate::units::Units;
 use crate::view3d::{self, Camera, Clip, Image, Scene};
 use crate::walls::{self, Axis};
-use crate::{font, massing, sheet, stairs};
+use crate::{massing, sheet, stairs};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -186,6 +187,8 @@ pub struct Drawing {
     k: f32,
     /// How much of what the view cuts it draws.
     detail: Detail,
+    /// What its text is written in.
+    font: Lettering,
 }
 
 impl Drawing {
@@ -200,7 +203,17 @@ impl Drawing {
             part: Part::Projection,
             k: 1.0,
             detail: Detail::Fine,
+            font: Lettering::Block,
         }
+    }
+    /// The same, its text written in `font`.
+    pub fn lettered(mut self, font: Lettering) -> Drawing {
+        self.font = font;
+        self
+    }
+    /// How wide `text` is in its lettering, capitals `height` px tall.
+    pub(crate) fn width(&self, text: &str, height: f32) -> f32 {
+        self.font.width(text, height)
     }
     /// What the primitives pushed next draw.
     pub(crate) fn own(&mut self, owner: Option<Id>) {
@@ -280,9 +293,9 @@ impl Drawing {
     /// on screen (y runs down).
     fn text_turned(&mut self, text: &str, (x, y): (f32, f32), height: f32, angle: f32, color: Rgb) {
         let (s, c) = angle.sin_cos();
-        let w = font::width(text, height);
+        let w = self.font.width(text, height);
         let part = std::mem::replace(&mut self.part, Part::Text);
-        for pts in font::strokes(text, -w / 2.0, height / 2.0, height) {
+        for pts in self.font.strokes(text, -w / 2.0, height / 2.0, height) {
             let pts = pts.into_iter().map(|(a, b)| (x + a * c - b * s, y + a * s + b * c)).collect();
             self.push(Prim::Line { pts, width: (height / 10.0).max(1.0), color, dash: None, closed: false });
         }
@@ -499,7 +512,7 @@ pub(crate) fn plan_shows(m: &Model, level: Id) -> Vec<P2> {
 /// An element that isn't in the model yet, drawn as a plan would draw it, its primitives owned
 /// by `id`: what a tool previews. Annotation, doors, windows, columns, components, stairs, ramps, railings, roofs and masses only.
 pub fn sketch(m: &Model, view: View, id: Id, e: &Element) -> Drawing {
-    let mut d = Drawing::new(view);
+    let mut d = Drawing::new(view).lettered(m.font);
     d.owner = Some(id);
     // Annotation as big as the view it will be in draws it.
     let on = match e {
@@ -658,7 +671,7 @@ fn section_bare(m: &Model, id: Id) -> Option<[P2; 2]> {
 
 /// The room, px, the widest level name or height takes past the end of a section's line, drawn at the size it is laid out at.
 fn level_names(m: &Model) -> f32 {
-    m.levels().iter().map(|(_, l)| font::width(&l.name, 10.0).max(font::width(&m.units.length(l.elevation), 10.0))).fold(0.0, f32::max)
+    m.levels().iter().map(|(_, l)| m.font.width(&l.name, 10.0).max(m.font.width(&m.units.length(l.elevation), 10.0))).fold(0.0, f32::max)
         + 12.0
 }
 
@@ -701,7 +714,7 @@ pub fn section(m: &Model, id: Id, view: View) -> Drawing {
 
 /// Section or elevation `id` as `section` draws it, its annotation `k` times the size it is laid out at.
 pub fn section_at(m: &Model, id: Id, view: View, k: f32) -> Drawing {
-    let mut d = Drawing::new(view);
+    let mut d = Drawing::new(view).lettered(m.font);
     (d.k, d.detail) = (k, detail_of(m, id));
     let Some(v) = m.section(id) else { return d };
     let look = Look::of(m, id);
@@ -877,7 +890,7 @@ pub fn section_at(m: &Model, id: Id, view: View, k: f32) -> Drawing {
         d.push(Prim::Line { pts: vec![a, b], width: 1.0, color: INK, dash: Some([12.0, 4.0]), closed: false });
         for (text, dy) in [(l.name.clone(), -8.0), (m.units.length(l.elevation), 8.0)] {
             let h = d.px(10.0);
-            d.text(&text, (b.0 + d.px(8.0) + font::width(&text, h) / 2.0, b.1 + d.px(dy)), h, INK);
+            d.text(&text, (b.0 + d.px(8.0) + d.width(&text, h) / 2.0, b.1 + d.px(dy)), h, INK);
         }
     }
     // Grids running into what it sees: across its line, reaching past it (within its depth).
@@ -907,7 +920,7 @@ pub fn section_at(m: &Model, id: Id, view: View, k: f32) -> Drawing {
     }
     d.owner = None;
     look.dress(&mut d);
-    let at = (24.0 + font::width(&v.name, 16.0) / 2.0, view.height as f32 - 26.0);
+    let at = (24.0 + d.width(&v.name, 16.0) / 2.0, view.height as f32 - 26.0);
     d.text_turned(&v.name, at, 16.0, 0.0, INK);
     d
 }
@@ -970,7 +983,7 @@ pub fn draw_at(m: &Model, level: Id, view: View, k: f32) -> Drawing {
 
 /// A floor plan of `level`, or `up`, its reflected ceiling plan.
 fn draw_plan(m: &Model, level: Id, view: View, up: bool, k: f32) -> Drawing {
-    let mut d = Drawing::new(view);
+    let mut d = Drawing::new(view).lettered(m.font);
     (d.k, d.detail) = (k, detail_of(m, level));
     let look = Look::of(m, level);
     let shown = |id: Id| look.shows(id);
@@ -1211,7 +1224,7 @@ fn draw_plan(m: &Model, level: Id, view: View, up: bool, k: f32) -> Drawing {
     if up {
         title = format!("{title} ({})", m.language.word("Ceiling Plan"));
     }
-    let at = (24.0 + font::width(&title, 16.0) / 2.0, view.height as f32 - 26.0);
+    let at = (24.0 + d.width(&title, 16.0) / 2.0, view.height as f32 - 26.0);
     d.text_turned(&title, at, 16.0, 0.0, INK);
     d
 }
@@ -1266,7 +1279,7 @@ fn slope_arrow(d: &mut Drawing, tail: P2, head: P2, slope: f64) {
     let (x, y) = arrow(d, a, b);
     let text = format!("{}°", figure(slope));
     // Beside it, to its left on screen.
-    let clear = font::width(&text, d.px(10.0)) / 2.0 * y.abs() + d.px(6.0) * x.abs() + d.px(4.0);
+    let clear = d.width(&text, d.px(10.0)) / 2.0 * y.abs() + d.px(6.0) * x.abs() + d.px(4.0);
     d.text(&text, ((a.0 + b.0) / 2.0 + y * clear, (a.1 + b.1) / 2.0 - x * clear), d.px(10.0), INK);
 }
 
@@ -1727,7 +1740,7 @@ fn walk(d: &mut Drawing, m: &Model, line: &[(P2, f64)], up: bool) {
     let len = (b.0 - a.0).hypot(b.1 - a.1).max(1e-3);
     let (x, y) = ((b.0 - a.0) / len, (b.1 - a.1) / len);
     // Before the walk line's start, clear of it however long the word is.
-    let back = font::width(label, d.px(9.0)) / 2.0 * x.abs() + d.px(5.0) * y.abs() + d.px(8.0);
+    let back = d.width(label, d.px(9.0)) / 2.0 * x.abs() + d.px(5.0) * y.abs() + d.px(8.0);
     d.text(label, (a.0 - x * back, a.1 - y * back), d.px(9.0), INK);
 }
 
@@ -1813,7 +1826,7 @@ fn angular(d: &mut Drawing, m: &Model, dim: &Dimension) {
     }
     // Outside the arc's middle, clear of it however the text sits across the ray.
     let (text, mid) = (format!("{}°", figure(sweep.to_degrees())), ray(from + sweep / 2.0));
-    let clear = f64::from(font::width(&text, 10.0) / 2.0) * mid.0.abs() + 5.0 * mid.1.abs() + 4.0;
+    let clear = f64::from(d.width(&text, 10.0) / 2.0) * mid.0.abs() + 5.0 * mid.1.abs() + 4.0;
     d.text(&text, d.view.px(o + mid * (r + clear * px)), d.px(10.0), INK);
 }
 
@@ -1836,7 +1849,7 @@ fn radial(d: &mut Drawing, m: &Model, dim: &Dimension) {
     }
     let text = format!("R {}", m.units.length(r));
     let (x, y) = d.view.px(end);
-    let w = font::width(&text, d.px(10.0)) / 2.0 + d.px(6.0);
+    let w = d.width(&text, d.px(10.0)) / 2.0 + d.px(6.0);
     d.text(&text, (x + u.0 as f32 * w, y - u.1 as f32 * w), d.px(10.0), INK);
 }
 
@@ -1850,7 +1863,7 @@ pub(crate) fn note(d: &mut Drawing, n: &Note) {
     let at = d.view.px(n.at);
     let turn = |(x, y): (f32, f32)| (at.0 + x * cos - y * sin, at.1 + x * sin + y * cos);
     for (i, line) in n.text.lines().enumerate() {
-        let mid = turn((font::width(line, h) / 2.0, h / 2.0 + i as f32 * h * 1.6));
+        let mid = turn((d.width(line, h) / 2.0, h / 2.0 + i as f32 * h * 1.6));
         d.text_turned(line, mid, h, a, INK);
     }
     if let Some(to) = n.leader {
@@ -1866,7 +1879,7 @@ fn spot_mark(d: &mut Drawing, (x, y): (f32, f32), z: Option<f64>, units: Units) 
     let from = d.prims.len();
     d.push(Prim::Fill { rings: vec![vec![(x, y), (x + 5.0, y - 8.0), (x - 5.0, y - 8.0)]], color: INK });
     let text = z.map_or_else(|| "?".into(), |z| height(units, z));
-    let w = font::width(&text, 10.0);
+    let w = d.width(&text, 10.0);
     d.push(Prim::Line { pts: vec![(x - 5.0, y - 8.0), (x + 9.0 + w, y - 8.0)], width: 1.0, color: INK, dash: None, closed: false });
     d.text(&text, (x + 7.0 + w / 2.0, y - 16.0), 10.0, INK);
     d.grow(from, (x, y));
@@ -1929,7 +1942,7 @@ fn tag(d: &mut Drawing, m: &Model, t: &Tag) {
     let text = m.tag_text(t);
     let (x, y) = d.view.px(head);
     let from = d.prims.len();
-    let (w, h) = ((font::width(&text, 10.0) / 2.0 + 5.0).max(8.0), 8.0);
+    let (w, h) = ((d.width(&text, 10.0) / 2.0 + 5.0).max(8.0), 8.0);
     let ring = if matches!(m.elements.get(&t.host), Some(Element::Window(_))) {
         vec![(x - w - 4.0, y), (x - w, y - h), (x + w, y - h), (x + w + 4.0, y), (x + w, y + h), (x - w, y + h)]
     } else {
@@ -1957,7 +1970,7 @@ fn section_mark(d: &mut Drawing, v: &Section) {
     let (ux, uy) = ((b.0 - a.0) / len, (b.1 - a.1) / len);
     let from = d.prims.len();
     d.push(Prim::Fill { rings: vec![vec![a, (a.0 + ux * 12.0, a.1 + uy * 12.0), (a.0 + lx * 12.0, a.1 + ly * 12.0)]], color: INK });
-    let back = font::width(&v.name, 10.0) / 2.0 + 8.0;
+    let back = d.width(&v.name, 10.0) / 2.0 + 8.0;
     d.text(&v.name, (a.0 - ux * back, a.1 - uy * back), 10.0, INK);
     d.grow(from, a);
     let from = d.prims.len();
@@ -1983,7 +1996,7 @@ fn elevation_mark(d: &mut Drawing, v: &Section) {
     let side = (-ly * R * 0.8, lx * R * 0.8);
     let flag = vec![(c.0 + side.0, c.1 + side.1), (c.0 + lx * (R + 7.0), c.1 + ly * (R + 7.0)), (c.0 - side.0, c.1 - side.1)];
     d.push(Prim::Fill { rings: vec![flag], color: INK });
-    let back = R + 6.0 + font::width(&v.name, 10.0) / 2.0 * lx.abs() + 6.0 * ly.abs();
+    let back = R + 6.0 + d.width(&v.name, 10.0) / 2.0 * lx.abs() + 6.0 * ly.abs();
     d.text(&v.name, (c.0 - lx * back, c.1 - ly * back), 10.0, INK);
     d.grow(from, c);
 }
@@ -2545,6 +2558,23 @@ mod tests {
         assert_eq!(svg.matches("<path").count(), d.prims.len());
         let pm = tiny_skia::Pixmap::decode_png(&png(&d).unwrap()).unwrap();
         assert_eq!((pm.width(), pm.height()), (640, 480));
+    }
+
+    #[test]
+    fn text_is_drawn_in_the_lettering_of_its_drawing() {
+        // The rows of the PNG `xxxx` inks, 20 px capitals centred on y = 50.
+        let rows = |font| {
+            let mut d = Drawing::new(View { scale: 1.0, cx: 0.0, cy: 0.0, width: 200, height: 100 }).lettered(font);
+            d.text("xxxx", (100.0, 50.0), 20.0, INK);
+            let pm = tiny_skia::Pixmap::decode_png(&png(&d).unwrap()).unwrap();
+            let inked: Vec<u32> = (0..100).filter(|&y| (0..200).any(|x| pm.pixel(x, y).is_some_and(|p| p.red() < 128))).collect();
+            (inked.first().copied().unwrap(), inked.last().copied().unwrap())
+        };
+        // Block letters write it in capitals, 20 px tall; ISO lettering in lower case, 14 px, on the same baseline.
+        let (top, bottom) = rows(Lettering::Block);
+        assert!((38..=41).contains(&top) && (59..=62).contains(&bottom), "{top}..{bottom}");
+        let (low, base) = rows(Lettering::Iso);
+        assert!((44..=47).contains(&low) && base == bottom, "{low}..{base}");
     }
 
     /// How tall the lettering element `id` draws is, px: its tallest stroke.

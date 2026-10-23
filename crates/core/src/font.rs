@@ -1,6 +1,10 @@
 //! Our own single-stroke lettering for plan annotation: capitals, digits, a few marks and the
 //! accents of Latin languages, drawn on an 8 x 12 grid (y up). Lower case is drawn as capitals,
-//! as architectural lettering is.
+//! as architectural lettering is. A project may write in [`Lettering::Iso`] instead.
+
+mod iso;
+
+use serde::{Deserialize, Serialize};
 
 type Glyph = &'static [&'static [(i8, i8)]];
 
@@ -119,17 +123,77 @@ fn base(c: char) -> Option<char> {
     })
 }
 
+/// The lettering a project's drawings and sheets are written in (`Model::font`, the `font` command).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lettering {
+    /// Capitals on an 8 x 12 grid, every character as wide as the next: what drawings always had.
+    #[default]
+    Block,
+    /// After ISO 3098 and NBR 8402: lower case, proportional widths, rounds as arcs, more marks ([`iso`]).
+    Iso,
+}
+
+impl Lettering {
+    pub const ALL: [Lettering; 2] = [Lettering::Block, Lettering::Iso];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Lettering::Block => "block",
+            Lettering::Iso => "iso",
+        }
+    }
+
+    /// Whether it's the default, which a project file leaves out.
+    pub fn is_block(&self) -> bool {
+        *self == Lettering::Block
+    }
+
+    /// The lettering of a name, in any case.
+    pub fn from_name(name: &str) -> Option<Lettering> {
+        Lettering::ALL.into_iter().find(|f| f.name().eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// How wide `text` is with capitals `height` px tall.
+    pub fn width(self, text: &str, height: f32) -> f32 {
+        match self {
+            Lettering::Block => width(text, height),
+            Lettering::Iso => {
+                let units: f32 = text.chars().map(|c| iso::width(c) + iso::GAP).sum();
+                (units - iso::GAP).max(0.0) * height / 10.0
+            }
+        }
+    }
+
+    /// Polylines drawing `text` with capitals `height` px tall, from `(x, y)` on the baseline, y down.
+    pub fn strokes(self, text: &str, x: f32, y: f32, height: f32) -> Vec<Vec<(f32, f32)>> {
+        match self {
+            Lettering::Block => strokes(text, x, y, height),
+            Lettering::Iso => {
+                let k = height / 10.0;
+                let mut x0 = x;
+                let mut out = Vec::new();
+                for c in text.chars() {
+                    out.extend(iso::strokes(c).into_iter().map(|s| s.into_iter().map(|(gx, gy)| (x0 + gx * k, y - gy * k)).collect()));
+                    x0 += (iso::width(c) + iso::GAP) * k;
+                }
+                out
+            }
+        }
+    }
+}
+
 /// Grid units from one character to the next.
 const ADVANCE: f32 = 11.0;
 
-/// How wide `text` is at `height` px.
-pub fn width(text: &str, height: f32) -> f32 {
+/// How wide `text` is at `height` px, in block letters.
+fn width(text: &str, height: f32) -> f32 {
     let n = text.chars().count() as f32;
     if n == 0.0 { 0.0 } else { (n * ADVANCE - 3.0) * height / 12.0 }
 }
 
-/// Polylines drawing `text` with capitals `height` px tall, from `(x, y)` on the baseline, y down.
-pub fn strokes(text: &str, x: f32, y: f32, height: f32) -> Vec<Vec<(f32, f32)>> {
+/// Polylines drawing `text` in block letters with capitals `height` px tall, from `(x, y)` on the baseline, y down.
+fn strokes(text: &str, x: f32, y: f32, height: f32) -> Vec<Vec<(f32, f32)>> {
     let k = height / 12.0;
     let mut out = Vec::new();
     for (i, c) in text.chars().flat_map(char::to_uppercase).enumerate() {
@@ -171,5 +235,68 @@ mod tests {
         assert_eq!(ys.iter().copied().fold(f32::MAX, f32::min), 76.0);
         assert_eq!(ys.iter().copied().fold(f32::MIN, f32::max), 100.0);
         assert_eq!(width("II", 12.0), 19.0);
+    }
+
+    /// The x every point of `text`'s strokes lies between, at 10 px from 0.
+    fn reach(f: Lettering, text: &str) -> (f32, f32) {
+        let xs: Vec<f32> = f.strokes(text, 0.0, 0.0, 10.0).into_iter().flatten().map(|p| p.0).collect();
+        (xs.iter().copied().fold(f32::MAX, f32::min), xs.iter().copied().fold(f32::MIN, f32::max))
+    }
+
+    #[test]
+    fn the_block_letters_stay_the_default_and_draw_as_they_did() {
+        assert_eq!(Lettering::default(), Lettering::Block);
+        assert_eq!(Lettering::Block.strokes("Sala 01", 3.0, 40.0, 12.0), strokes("Sala 01", 3.0, 40.0, 12.0));
+        assert_eq!(Lettering::Block.width("Sala 01", 12.0), width("Sala 01", 12.0));
+        for f in [Lettering::Block, Lettering::Iso] {
+            assert_eq!(Lettering::from_name(f.name()), Some(f));
+        }
+        assert_eq!(Lettering::from_name("ISO"), Some(Lettering::Iso));
+        assert_eq!(Lettering::from_name("comic"), None);
+    }
+
+    #[test]
+    fn iso_lettering_keeps_lower_case_and_draws_the_marks_the_block_letters_lack() {
+        let iso = Lettering::Iso;
+        assert_ne!(iso.strokes("sala", 0.0, 0.0, 10.0), iso.strokes("SALA", 0.0, 0.0, 10.0));
+        let unknown = iso.strokes("€", 0.0, 0.0, 10.0);
+        assert_eq!(unknown, iso.strokes("?", 0.0, 0.0, 10.0));
+        for c in "%;<>º³!*[]".chars() {
+            assert_eq!(Lettering::Block.strokes(&c.to_string(), 0.0, 0.0, 12.0), strokes("?", 0.0, 0.0, 12.0), "{c}");
+        }
+        let printable = (' '..='~').filter(|c| !matches!(c, '?' | '@'));
+        let marks = "%;<>º³!*[]ª¹²°±×÷·´Øø⌀–—";
+        let accented = "ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÝÑÇáàâãäéèêëíìîïóòôõöúùûüýñç";
+        for c in printable.chain(marks.chars()).chain(accented.chars()) {
+            assert_ne!(iso.strokes(&c.to_string(), 0.0, 0.0, 10.0), unknown, "{c} has a shape of its own");
+        }
+        // An accented letter is its letter's strokes and the mark's; í loses i's dot.
+        let a = iso.strokes("a", 0.0, 0.0, 10.0);
+        let acute = iso.strokes("á", 0.0, 0.0, 10.0);
+        assert_eq!((acute.len(), &acute[..a.len()]), (a.len() + 1, &a[..]));
+        assert_eq!(iso.strokes("í", 0.0, 0.0, 10.0).len(), iso.strokes("i", 0.0, 0.0, 10.0).len());
+    }
+
+    #[test]
+    fn iso_lettering_is_as_wide_as_its_letters_and_measures_what_it_draws() {
+        let iso = Lettering::Iso;
+        assert!(iso.width("iii", 10.0) < iso.width("mmm", 10.0) / 2.0);
+        assert_eq!(iso.width("", 10.0), 0.0);
+        // Capitals 10 px tall stand on the baseline; lower case is 7 px, with descenders to 3 below it.
+        let ys = |t: &str| -> (f32, f32) {
+            let ys: Vec<f32> = iso.strokes(t, 0.0, 0.0, 10.0).into_iter().flatten().map(|p| p.1).collect();
+            (ys.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MIN, f32::max))
+        };
+        assert_eq!(ys("HEL"), (-10.0, 0.0));
+        assert_eq!(ys("xvz"), (-7.0, 0.0));
+        assert_eq!(ys("p"), (-7.0, 3.0));
+        // What it draws starts at x and ends at its width, within half a stroke: tables and title blocks lay out by it.
+        for text in ["Planta de cobertura 1:100", "ÁREA 53,90 m²", "Ø 100 mm; 2% <máx.>", "H", "lll", "[3]"] {
+            let (lo, hi) = reach(iso, text);
+            let w = iso.width(text, 10.0);
+            assert!(lo > -0.6 && lo < 0.6, "{text}: starts at {lo}");
+            assert!((hi - w).abs() < 0.6, "{text}: ends at {hi}, {w} wide");
+        }
+        assert!((iso.width("Sala", 25.0) - 2.5 * iso.width("Sala", 10.0)).abs() < 1e-3);
     }
 }

@@ -763,6 +763,8 @@ pub struct Scene {
     masses: BTreeSet<Id>,
     /// Each level's plane: its name, and the corners of its extent at its elevation.
     levels: Vec<(Id, String, [P3; 4])>,
+    /// What the levels' names are written in.
+    font: crate::font::Lettering,
 }
 
 /// How an element's triangles name their faces.
@@ -862,7 +864,7 @@ impl Scene {
                 (id, l.name.clone(), [[lo.0, lo.1, z], [hi.0, lo.1, z], [hi.0, hi.1, z], [lo.0, hi.1, z]])
             })
             .collect();
-        Scene { tris, planes, smooth, faces: Arc::new(faces), skins, bases, masses, levels, edges: OnceLock::new() }
+        Scene { tris, planes, smooth, faces: Arc::new(faces), skins, bases, masses, levels, edges: OnceLock::new(), font: m.font }
     }
 
     /// A view of the whole model from `azimuth` and `elevation` (degrees), fitted into the picture.
@@ -904,7 +906,7 @@ impl Scene {
                 let end = if cam.project(sides[0]).0 >= cam.project(sides[1]).0 { sides[0] } else { sides[1] };
                 let d = unit(sub(end, far));
                 let (w, h) =
-                    (f64::from(crate::font::width(name, HEAD_TEXT) + 2.0 * HEAD_PAD) * px, f64::from(HEAD_TEXT + 2.0 * HEAD_PAD) * px);
+                    (f64::from(self.font.width(name, HEAD_TEXT) + 2.0 * HEAD_PAD) * px, f64::from(HEAD_TEXT + 2.0 * HEAD_PAD) * px);
                 let foot = add(end, mul(d, 2.0 * f64::from(HEAD_PAD) * px));
                 let up = [0.0, 0.0, h];
                 let corners = [foot, add(foot, mul(d, w)), add(add(foot, mul(d, w)), up), add(foot, up)];
@@ -1228,7 +1230,7 @@ impl Scene {
                 let (d, px) = (unit(sub(along, foot)), 1.0 / cam.scale.max(1e-9));
                 let height = f64::from(HEAD_TEXT + 2.0 * HEAD_PAD);
                 let to3 = |(x, y): (f32, f32)| add(add(foot, mul(d, f64::from(x) * px)), [0.0, 0.0, (height - f64::from(y)) * px]);
-                for stroke in crate::font::strokes(&head.name, HEAD_PAD, HEAD_PAD + HEAD_TEXT, HEAD_TEXT) {
+                for stroke in self.font.strokes(&head.name, HEAD_PAD, HEAD_PAD + HEAD_TEXT, HEAD_TEXT) {
                     for seg in stroke.windows(2) {
                         if let [a, b] = seg {
                             outline((cam.project(to3(*a)), cam.project(to3(*b))), (w, h), 1, slack, &depth, &mut paint);

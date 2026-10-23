@@ -1658,6 +1658,47 @@ fn text_notes_go_in_plans_sections_and_sheets() {
 }
 
 #[test]
+fn the_font_command_picks_the_lettering_of_every_drawing_sheet_and_pdf() {
+    let mut s = Session::new();
+    house(&mut s);
+    assert_eq!(run(&mut s, "font", json!({}))["name"], "block");
+    run(&mut s, "text", json!({"text": "Água fria Ø 25; 2% <máx.> [ok]!", "at": [1000, 5000]}));
+    run(&mut s, "sheet", json!({}));
+    run(&mut s, "place", json!({"sheet": "A101", "view": "Level 1"}));
+    let png = |s: &mut Session, view: &str| run(s, "render", json!({"view": view}))["pngBase64"].as_str().unwrap().to_string();
+    let pdf = |s: &mut Session| {
+        let path = temp("lettering.pdf");
+        run(s, "save", json!({"path": path}));
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(path);
+        bytes
+    };
+    let (plan, sheet, printed) = (png(&mut s, "Level 1"), png(&mut s, "A101"), pdf(&mut s));
+    assert_eq!(pdf(&mut s), printed, "the same each time");
+    assert_eq!(run(&mut s, "font", json!({"name": "ISO"}))["name"], "iso");
+    assert_eq!(s.model.font, crate::font::Lettering::Iso);
+    assert_ne!(png(&mut s, "Level 1"), plan);
+    assert_ne!(png(&mut s, "A101"), sheet);
+    assert_ne!(pdf(&mut s), printed);
+    // Kept in the project's file, which leaves the default out.
+    let path = temp("lettering.bimcraft");
+    run(&mut s, "save", json!({"path": path}));
+    assert!(std::fs::read_to_string(&path).unwrap().contains("\"font\""));
+    let mut back = Session::new();
+    run(&mut back, "open", json!({"path": path}));
+    assert_eq!(back.model.font, crate::font::Lettering::Iso);
+    let _ = std::fs::remove_file(&path);
+    // One undo step, and back as it was.
+    run(&mut s, "undo", json!({}));
+    assert_eq!(png(&mut s, "Level 1"), plan);
+    run(&mut s, "save", json!({"path": path}));
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("\"font\""));
+    let _ = std::fs::remove_file(&path);
+    let e = s.execute("font", &json!({"name": "comic"})).unwrap_err();
+    assert!(e.contains("block") && e.contains("iso"), "{e}");
+}
+
+#[test]
 fn dimensions_measure_to_wall_ends_and_openings() {
     let mut s = Session::new();
     let ids = house(&mut s);
