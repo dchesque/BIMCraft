@@ -423,8 +423,13 @@ pub static ALL: &[Command] = &[
         "sheet",
         "Sheet",
         &[],
-        "{number?, name?, size?: A0|A1|A2|A3|A4} a sheet of paper, landscape (A3 by default), with a title block; numbers \
-         run A101, A102…",
+        "{number?, name?, size?: A0|A1|A2|A3|A4, title_block?: umuarama, fields?: {field: text, …}} a sheet of paper, \
+         landscape (A3 by default), with a title block; numbers run A101, A102…. BIMCraft's own title block unless \
+         `title_block` names another: `umuarama` is the legend box Umuarama's building code asks for (LC 436/2017, art. 37: \
+         17 x 27 cm in the bottom right corner, A3 or larger), whose `fields` are tipo, conteudo, proprietario, cpf, zona, \
+         endereco, autor, autor_registro, responsavel, responsavel_registro, escala (the views' by default), data, \
+         desenhista, areas (lines of `label: value`, the table of areas) and declaracao (the statement, the code's by \
+         default). `modify` changes them as any field",
         new_sheet,
     ),
     edit(
@@ -3897,8 +3902,36 @@ fn new_sheet(s: &mut Session, p: &Value) -> R {
     };
     let name = string(c, p, "name")?.unwrap_or_else(|| m.language.word("Unnamed").into());
     let size = string(c, p, "size")?.map_or_else(|| "A3".into(), |z| z.trim().to_ascii_uppercase());
-    let id = s.model_mut().insert(Element::Sheet(Sheet { number: number.clone(), name, size }));
+    let title_block = string(c, p, "title_block")?.map(|t| t.trim().to_lowercase());
+    let fields = title_fields(c, p)?;
+    let id = s.model_mut().insert(Element::Sheet(Sheet { number: number.clone(), name, size, title_block, fields }));
     Ok(json!({"id": id, "number": number}))
+}
+
+/// `fields` {field: text, …}: what a sheet's title block says. Which fields there are is the
+/// title block's to say, in `Model::check`.
+fn title_fields(c: &str, p: &Value) -> Result<BTreeMap<String, String>, String> {
+    let wrong = || {
+        bad(
+            c,
+            format!(
+                "`fields` must be {{field: text, …}}, at most {} of them, each text of at most {} characters",
+                sheet::FIELDS.len(),
+                sheet::MAX_FIELD
+            ),
+        )
+    };
+    match p.get("fields") {
+        v if absent(v) => Ok(BTreeMap::new()),
+        Some(Value::Object(o)) if o.len() <= sheet::FIELDS.len() => o
+            .iter()
+            .map(|(k, v)| match v {
+                Value::String(s) if s.chars().count() <= sheet::MAX_FIELD && k.chars().count() <= MAX_TEXT => Ok((k.clone(), s.clone())),
+                _ => Err(wrong()),
+            })
+            .collect(),
+        _ => Err(wrong()),
+    }
 }
 
 fn place(s: &mut Session, p: &Value) -> R {

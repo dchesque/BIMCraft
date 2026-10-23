@@ -108,11 +108,206 @@ fn left(d: &mut Drawing, text: &str, at: P2, height: f64) {
     d.text(text, (x + font::width(text, h) / 2.0, y), h, INK);
 }
 
+/// `text` with its right end at paper point `at` (mm), capitals `height` mm tall.
+fn right(d: &mut Drawing, text: &str, at: P2, height: f64) {
+    let h = (height * DENSITY) as f32;
+    let (x, y) = d.view.px(at);
+    d.text(text, (x - font::width(text, h) / 2.0, y), h, INK);
+}
+
+/// `text` broken into lines at most `width` mm long, capitals `height` mm tall; its own line
+/// breaks kept.
+fn wrap(text: &str, width: f64, height: f64) -> Vec<String> {
+    let h = (height * DENSITY) as f32;
+    let fits = |s: &str| f64::from(font::width(s, h)) / DENSITY <= width;
+    let mut lines = Vec::new();
+    for para in text.lines() {
+        let mut line = String::new();
+        for word in para.split_whitespace() {
+            let longer = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if fits(&longer) || line.is_empty() {
+                line = longer;
+            } else {
+                lines.push(std::mem::replace(&mut line, word.to_string()));
+            }
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+fn rect(a: P2, b: P2) -> Vec<P2> {
+    vec![a, P2(b.0, a.1), b, P2(a.0, b.1)]
+}
+
+/// The title blocks a sheet may have besides BIMCraft's own.
+pub const TITLE_BLOCKS: [&str; 1] = ["umuarama"];
+/// The fields of Umuarama's title block, in the order its legend box shows them.
+pub const FIELDS: [&str; 15] = [
+    "tipo",
+    "conteudo",
+    "proprietario",
+    "cpf",
+    "zona",
+    "endereco",
+    "autor",
+    "autor_registro",
+    "responsavel",
+    "responsavel_registro",
+    "escala",
+    "data",
+    "desenhista",
+    "areas",
+    "declaracao",
+];
+/// How long a field may be: the table of areas runs to several lines.
+pub const MAX_FIELD: usize = 1024;
+/// Umuarama's legend box (LC 436/2017, art. 37 §2): 170 x 270 mm, its stamp at most 90 mm tall,
+/// the sheet number in a 35 mm square, and 60 mm left for the city's approval.
+const LEGEND: P2 = P2(170.0, 270.0);
+const STAMP: f64 = 90.0;
+const NUMBER_BOX: f64 = 35.0;
+const CITY: f64 = 60.0;
+/// What the code has the owner declare, unless `declaracao` says otherwise.
+const DECLARATION: &str = "Declaro que a aprovação do projeto não implica no reconhecimento, por parte da Prefeitura, \
+    do direito de propriedade ou de posse do terreno.";
+
+/// Whether sheet `sh`, on `paper`, has a title block BIMCraft draws and fields it has.
+pub fn check_title_block(sh: &Sheet, paper: P2) -> Result<(), String> {
+    match sh.title_block.as_deref() {
+        None if sh.fields.is_empty() => Ok(()),
+        None => Err("its `fields` belong to a title block; give it one (`title_block`: umuarama)".into()),
+        Some(t) if !TITLE_BLOCKS.contains(&t) => Err(format!("title block `{t}` isn't one there is ({})", TITLE_BLOCKS.join(", "))),
+        Some(_) => {
+            if let Some(k) = sh.fields.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+                return Err(format!("the title block has no field `{k}` (it has {})", FIELDS.join(", ")));
+            }
+            if let Some((k, _)) = sh.fields.iter().find(|(_, v)| v.chars().count() > MAX_FIELD) {
+                return Err(format!("its field `{k}` is longer than {MAX_FIELD} characters"));
+            }
+            if paper.1 < LEGEND.1 + 20.0 {
+                return Err(format!("Umuarama's legend box is {} mm tall: it needs A3 or larger, not {}", LEGEND.1, sh.size));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Umuarama's legend box in the bottom right corner (LC 436/2017, art. 37 §2): from the top,
+/// the room for the city's approval, the owner's statement, the table of areas, and the stamp
+/// (the kind of project and what the sheet shows, the owner, the zone and address, the
+/// professionals, and the scale, date and drafter, beside the sheet number's box).
+fn umuarama(d: &mut Drawing, sheet: &Sheet, paper: P2, scale: &str) {
+    let field = |k: &str| sheet.fields.get(k).map_or("", String::as_str);
+    let (x1, y0) = (paper.0 - 10.0, 10.0);
+    let (x0, y1) = (x1 - LEGEND.0, y0 + LEGEND.1);
+    d.line(&rect(P2(x0, y0), P2(x1, y1)), 2.5, INK, true);
+    let hr = |d: &mut Drawing, y: f64, a: f64, b: f64, w: f32| d.line(&[P2(a, y), P2(b, y)], w, INK, false);
+    let vr = |d: &mut Drawing, x: f64, a: f64, b: f64| d.line(&[P2(x, a), P2(x, b)], 1.0, INK, false);
+    let label = |d: &mut Drawing, s: &str, x: f64, top: f64| left(d, s, P2(x + 2.0, top - 2.5), 1.6);
+
+    // The stamp, from its foot: the scale, date and drafter in 7 mm strips; the professionals;
+    // the zone and the address; the owner; the kind of project and what the sheet shows, beside
+    // the sheet number.
+    let ys = y0 + STAMP;
+    hr(d, ys, x0, x1, 2.5);
+    let strip = y0 + 7.0;
+    hr(d, strip, x0, x1, 1.0);
+    let third = LEGEND.0 / 3.0;
+    let escala = if field("escala").is_empty() { scale.to_string() } else { format!("ESCALA {}", field("escala")) };
+    left(d, &escala, P2(x0 + 2.0, y0 + 3.5), 2.0);
+    vr(d, x0 + third, y0, strip);
+    left(d, &format!("DATA: {}", field("data")), P2(x0 + third + 2.0, y0 + 3.5), 2.0);
+    vr(d, x0 + 2.0 * third, y0, strip);
+    left(d, &format!("DESENHO: {}", field("desenhista")), P2(x0 + 2.0 * third + 2.0, y0 + 3.5), 2.0);
+
+    let pros = strip + 36.0;
+    hr(d, pros, x0, x1, 1.0);
+    let half = x0 + LEGEND.0 / 2.0;
+    vr(d, half, strip, pros);
+    for (x, title, name, reg) in [
+        (x0, "AUTOR DO PROJETO", field("autor"), field("autor_registro")),
+        (half, "RESPONSÁVEL TÉCNICO PELA EXECUÇÃO", field("responsavel"), field("responsavel_registro")),
+    ] {
+        label(d, title, x, pros);
+        left(d, name, P2(x + 2.0, pros - 10.0), 2.5);
+        left(d, reg, P2(x + 2.0, pros - 16.0), 2.0);
+        d.line(&[P2(x + 8.0, strip + 8.0), P2(x + LEGEND.0 / 2.0 - 8.0, strip + 8.0)], 0.8, INK, false);
+        left(d, "ASSINATURA", P2(x + 8.0, strip + 5.0), 1.6);
+    }
+
+    let place = pros + 12.0;
+    hr(d, place, x0, x1 - NUMBER_BOX, 1.0);
+    vr(d, x0 + 40.0, pros, place);
+    label(d, "ZONA", x0, place);
+    left(d, field("zona"), P2(x0 + 2.0, pros + 4.0), 2.5);
+    label(d, "ENDEREÇO", x0 + 40.0, place);
+    for (i, line) in wrap(field("endereco"), LEGEND.0 - 40.0 - NUMBER_BOX - 4.0, 2.0).iter().take(2).enumerate() {
+        left(d, line, P2(x0 + 42.0, pros + 6.0 - 3.0 * i as f64), 2.0);
+    }
+
+    // The sheet number's square, in the stamp's top right corner.
+    let (nx, ny) = (x1 - NUMBER_BOX, ys - NUMBER_BOX);
+    d.line(&rect(P2(nx, ny), P2(x1, ys)), 1.5, INK, true);
+    label(d, "FOLHA", nx, ys);
+    let number = (7.0 * DENSITY) as f32;
+    let at = d.view.px(P2(nx + NUMBER_BOX / 2.0, ny + NUMBER_BOX / 2.0 - 2.0));
+    d.text(&sheet.number, at, number, INK);
+    if pros + 12.0 < ny {
+        vr(d, nx, place, ny);
+    }
+
+    let owner = place + (ys - place) * 0.47;
+    hr(d, owner, x0, nx, 1.0);
+    label(d, "PROPRIETÁRIO", x0, owner);
+    left(d, field("proprietario"), P2(x0 + 2.0, owner - 7.5), 2.5);
+    left(d, &format!("CPF: {}", field("cpf")), P2(x0 + 2.0, owner - 12.5), 2.0);
+    d.line(&[P2(x0 + 75.0, place + 4.0), P2(nx - 4.0, place + 4.0)], 0.8, INK, false);
+    left(d, "ASSINATURA", P2(x0 + 75.0, place + 1.8), 1.6);
+    let kind = if field("tipo").is_empty() { sheet.name.as_str() } else { field("tipo") };
+    left(d, kind, P2(x0 + 2.0, ys - 6.0), 5.0);
+    for (i, line) in wrap(field("conteudo"), nx - x0 - 4.0, 2.5).iter().take(2).enumerate() {
+        left(d, line, P2(x0 + 2.0, ys - 11.5 - 3.6 * i as f64), 2.5);
+    }
+
+    // Above the stamp: the table of areas, the owner's statement, and the city's room.
+    let city = y1 - CITY;
+    hr(d, city, x0, x1, 1.5);
+    label(d, "ESPAÇO RESERVADO À PREFEITURA E DEMAIS ÓRGÃOS", x0, y1);
+    let statement = if field("declaracao").is_empty() { DECLARATION } else { field("declaracao") };
+    let lines = wrap(statement, LEGEND.0 - 4.0, 2.2);
+    let said = city - 6.0 - 3.6 * lines.len() as f64;
+    hr(d, said, x0, x1, 1.5);
+    for (i, line) in lines.iter().enumerate() {
+        left(d, line, P2(x0 + 2.0, city - 4.0 - 3.6 * i as f64), 2.2);
+    }
+    label(d, "QUADRO DE ÁREAS", x0, said);
+    let mut y = said - 9.0;
+    for row in field("areas").lines().filter(|r| !r.trim().is_empty()) {
+        if y < ys + 4.0 {
+            break;
+        }
+        match row.rsplit_once(':') {
+            Some((what, value)) => {
+                left(d, what.trim(), P2(x0 + 2.0, y), 2.5);
+                right(d, value.trim(), P2(x1 - 2.0, y), 2.5);
+            }
+            None => left(d, row.trim(), P2(x0 + 2.0, y), 2.5),
+        }
+        hr(d, y - 3.0, x0 + 2.0, x1 - 2.0, 0.5);
+        y -= 7.0;
+    }
+}
+
 /// The border, 20 mm in on the left (for binding) and 10 mm on the other sides, and the title
-/// box in the bottom right corner: the project, the sheet's name, its scale, and its number.
+/// box in the bottom right corner: the project, the sheet's name, its scale, and its number; or
+/// the title block the sheet names.
 fn title_block(d: &mut Drawing, project: &str, sheet: &Sheet, paper: P2, scale: &str) {
-    let rect = |a: P2, b: P2| vec![a, P2(b.0, a.1), b, P2(a.0, b.1)];
     d.line(&rect(P2(20.0, 10.0), P2(paper.0 - 10.0, paper.1 - 10.0)), 2.5, INK, true);
+    if sheet.title_block.is_some() {
+        umuarama(d, sheet, paper, scale);
+        return;
+    }
     let width = TITLE.0.min(paper.0 - 30.0);
     let (x0, x1, y0, y1) = (paper.0 - 10.0 - width, paper.0 - 10.0, 10.0, 10.0 + TITLE.1);
     d.line(&rect(P2(x0, y0), P2(x1, y1)), 2.5, INK, true);
@@ -326,6 +521,49 @@ mod tests {
         // What a viewport draws is the viewport's to pick; the title block is the sheet's.
         assert_eq!(d.pick(at(P2(4000.0, 0.0)), 2.0), Some(8));
         assert_eq!(d.pick(d.view.px(P2(20.0, 150.0)), 2.0), Some(7));
+    }
+
+    #[test]
+    fn umuaramas_title_block_is_the_legend_box_its_building_code_asks_for() {
+        let mut s = Session::new();
+        s.script(
+            r#"sheet {"name": "Projeto", "size": "A2", "title_block": "umuarama", "fields": {"tipo": "Projeto arquitetônico", "areas": "Lote: 140,00 m²\nA construir: 53,90 m²"}}"#,
+        )
+        .unwrap();
+        let d = draw(&s.model, 3).unwrap();
+        let png = png(&d).unwrap();
+        let dark = |p: P2| {
+            let (r, g, b) = pixel(&png, d.view.px(p));
+            r < 120 && g < 120 && b < 120
+        };
+        // A2 is 594 x 420 mm: the legend box is 170 mm wide and 270 mm tall in the bottom right
+        // corner, inside the border, its stamp at most 90 mm tall at its foot.
+        let (x0, x1) = (594.0 - 10.0 - 170.0, 594.0 - 10.0);
+        assert!(dark(P2(x0, 200.0)), "the legend box's left side");
+        assert!(dark(P2(x0 + 85.0, 280.0)), "its top, 270 mm up from the border");
+        assert!(dark(P2(x0 + 60.0, 100.0)), "the stamp's top, 90 mm up");
+        assert!(dark(P2(x1 - 35.0, 80.0)), "the sheet number's 35 mm box");
+        assert!(!dark(P2(x0 + 85.0, 290.0)), "nothing above the legend box");
+        assert!(!dark(P2(x1 - 175.0, 30.0)), "and none of BIMCraft's own title box");
+    }
+
+    #[test]
+    fn a_title_block_says_what_it_takes() {
+        let mut s = Session::new();
+        let err = s.script(r#"sheet {"title_block": "curitiba"}"#).unwrap_err();
+        assert!(err.contains("umuarama"), "{err}");
+        let err = s.script(r#"sheet {"title_block": "umuarama", "fields": {"proprietária": "x"}}"#).unwrap_err();
+        assert!(err.contains("proprietario"), "the fields there are: {err}");
+        let err = s.script(r#"sheet {"title_block": "umuarama", "size": "A4"}"#).unwrap_err();
+        assert!(err.contains("A3"), "{err}");
+        let err = s.script(r#"sheet {"title_block": "umuarama", "fields": {"tipo": 3}}"#).unwrap_err();
+        assert!(err.contains("fields"), "{err}");
+        // A sheet's fields change as any of its fields do.
+        s.script(r#"sheet {"title_block": "umuarama", "fields": {"tipo": "Projeto"}}"#).unwrap();
+        s.script(r#"modify {"id": 3, "fields": {"data": "Outubro de 2026"}}"#).unwrap();
+        let sh = s.model.sheet(3).unwrap();
+        assert_eq!(sh.fields.get("tipo").map(String::as_str), Some("Projeto"));
+        assert_eq!(sh.fields.get("data").map(String::as_str), Some("Outubro de 2026"));
     }
 
     #[test]

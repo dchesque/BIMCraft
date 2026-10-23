@@ -961,6 +961,12 @@ pub struct Sheet {
     pub number: String,
     pub name: String,
     pub size: String,
+    /// The title block it's drawn with: none for BIMCraft's own, else one of `sheet::TITLE_BLOCKS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_block: Option<String>,
+    /// What its title block's boxes say, by field (`sheet::FIELDS`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
 }
 
 /// The paper an ISO size names, landscape: width and height in mm.
@@ -3413,9 +3419,10 @@ impl Model {
                     if !sheet_numbers.insert(sh.number.as_str()) {
                         return Err(format!("{who}: another sheet is already numbered `{}`", sh.number));
                     }
-                    if paper(&sh.size).is_none() {
+                    let Some(sheet_paper) = paper(&sh.size) else {
                         return Err(format!("{who}: size `{}` isn't A0, A1, A2, A3 or A4", sh.size));
-                    }
+                    };
+                    crate::sheet::check_title_block(sh, sheet_paper).map_err(|e| format!("{who}: {e}"))?;
                 }
                 Element::Viewport(v) => {
                     if self.sheet(v.sheet).is_none() {
